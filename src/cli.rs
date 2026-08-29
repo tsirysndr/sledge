@@ -50,7 +50,8 @@ pub struct ReadArgs {
     #[arg(long)]
     pub length: Option<usize>,
 
-    /// Print a raw hex dump instead of decoding as text.
+    /// Print a raw hex dump instead of decoding as text. On an NFC tag this
+    /// dumps the tag's user memory instead of its NDEF URI records.
     #[arg(long)]
     pub raw: bool,
 
@@ -73,7 +74,8 @@ pub struct ReadArgs {
 
 #[derive(Args)]
 pub struct WriteArgs {
-    /// The text to write.
+    /// The text to write. On an NFC tag each newline-separated line becomes one
+    /// NDEF URI record, in order.
     pub text: String,
 
     /// Start address / offset in bytes. Defaults past the SLE protected header.
@@ -105,6 +107,11 @@ pub struct WriteArgs {
     /// Code, 0-6 = PIN / application codes).
     #[arg(long, default_value_t = 7)]
     pub code: u8,
+
+    /// (NFC only) NDEF-format a blank MIFARE Classic tag before writing. Only
+    /// applies to a tag still on its factory keys, so nothing is overwritten.
+    #[arg(long)]
+    pub format: bool,
 
     /// Actually perform the write. Without this flag the command is a dry run.
     #[arg(long)]

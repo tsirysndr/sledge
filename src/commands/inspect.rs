@@ -1,6 +1,6 @@
 use crate::card::{CardKind, Connected, SLE5528_SIZE};
-use crate::sle;
 use crate::util::hexdump;
+use crate::{nfc, sle};
 use std::error::Error;
 
 pub fn run(c: &Connected) -> Result<(), Box<dyn Error>> {
@@ -34,6 +34,61 @@ pub fn run(c: &Connected) -> Result<(), Box<dyn Error>> {
             println!("ACOS3 is filesystem-based. ATR inspection only; no PIN,");
             println!("authentication, write, or personalization commands were sent.");
             println!("Use `read`/`write --file <ID>` to access a specific EF.");
+        }
+        CardKind::Nfc(tag) => {
+            c.with_transaction(|tx| {
+                println!("UID: {}", nfc::uid(tx)?);
+
+                match tag {
+                    nfc::NfcTag::Type2 => {
+                        println!("Usable memory: {} bytes", nfc::capacity(tx));
+                        println!(
+                            "Access: {}",
+                            if nfc::is_read_only(tx) {
+                                "locked read-only (irreversible)"
+                            } else {
+                                "read/write"
+                            }
+                        );
+                    }
+                    nfc::NfcTag::Classic { .. } => {
+                        println!(
+                            "Usable memory: {} bytes (NDEF sectors)",
+                            tag.declared_capacity().unwrap_or(0)
+                        );
+                        println!(
+                            "Access: {}",
+                            match nfc::classic_state(tx) {
+                                nfc::ClassicState::Ndef => "NDEF-formatted, read/write",
+                                nfc::ClassicState::Blank =>
+                                    "blank (factory keys); needs --format before a write",
+                                nfc::ClassicState::Foreign => "locked with unknown keys",
+                            }
+                        );
+                    }
+                }
+
+                println!();
+                let uris = nfc::read_uris(tx, tag)?;
+                if uris.is_empty() {
+                    println!("NDEF: (no message)");
+                } else {
+                    println!("NDEF URI records:");
+                    for (i, uri) in uris.iter().enumerate() {
+                        println!("  [{i}] {uri}");
+                    }
+                }
+
+                println!();
+                println!("User memory:");
+                println!();
+                let memory = nfc::read_memory(tx, tag)?;
+                hexdump(&memory);
+                std::fs::write("nfc-tag.bin", &memory)?;
+                println!();
+                println!("Saved raw dump to nfc-tag.bin");
+                Ok(())
+            })?;
         }
         CardKind::Unknown => {
             println!("Unknown card. Raw ATR: {}", hex::encode_upper(&c.atr));

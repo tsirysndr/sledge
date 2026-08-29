@@ -2,13 +2,14 @@ use crate::aturi::Dict;
 use crate::card::{CardKind, Connected};
 use crate::cli::WriteArgs;
 use crate::util::parse_hex;
-use crate::{acos, sle};
+use crate::{acos, nfc, sle};
 use std::error::Error;
 
 pub fn run(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
     match c.kind {
         CardKind::Sle5528 => write_sle(c, args, dict),
         CardKind::Acos3 => write_acos(c, args, dict),
+        CardKind::Nfc(tag) => write_nfc(c, args, tag),
         CardKind::Unknown => Err("unknown card type; cannot write".into()),
     }
 }
@@ -185,6 +186,86 @@ fn write_acos(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dy
     } else {
         Err("write verification mismatch (read-back differs)".into())
     }
+}
+
+/// Write an NDEF message to a contactless tag.
+///
+/// Unlike the contact cards, the text is *not* compact-encoded: an NFC tag is
+/// meant to be readable by anything that taps it — a phone, the rocksky app —
+/// and NDEF URI records are that shared format. Each newline-separated line
+/// becomes one URI record, in order, so the first line is the one a reader acts
+/// on and the rest are fallbacks.
+fn write_nfc(c: &Connected, args: &WriteArgs, tag: nfc::NfcTag) -> Result<(), Box<dyn Error>> {
+    let uris: Vec<&str> = args
+        .text
+        .split('\n')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if uris.is_empty() {
+        return Err("nothing to write".into());
+    }
+
+    println!();
+    println!("Plan: write {} NDEF URI record(s):", uris.len());
+    for (i, uri) in uris.iter().enumerate() {
+        println!("      [{i}] {uri}");
+    }
+
+    let format = args.format;
+    let confirmed = args.yes;
+    c.with_transaction(|tx| {
+        println!("      UID {}", nfc::uid(tx)?);
+
+        match tag {
+            nfc::NfcTag::Type2 => {
+                println!("      {} bytes of usable tag memory.", nfc::capacity(tx));
+                if nfc::is_read_only(tx) {
+                    return Err("this tag is locked read-only and can't be rewritten".into());
+                }
+            }
+            nfc::NfcTag::Classic { .. } => {
+                let room = tag.declared_capacity().unwrap_or(0);
+                match nfc::classic_state(tx) {
+                    nfc::ClassicState::Ndef => {
+                        println!("      NDEF-formatted, {room} bytes of usable tag memory.")
+                    }
+                    nfc::ClassicState::Blank if format => println!(
+                        "      blank (factory keys) — will be NDEF-formatted first, \
+                         then {room} bytes are usable."
+                    ),
+                    nfc::ClassicState::Blank => {
+                        return Err("this MIFARE Classic tag has never been NDEF-formatted; \
+                                    re-run with --format to format it (it is blank, so \
+                                    nothing is lost)"
+                            .into());
+                    }
+                    nfc::ClassicState::Foreign => {
+                        return Err("this MIFARE Classic tag is locked with keys we don't \
+                                    have, so it can't be written"
+                            .into());
+                    }
+                }
+            }
+        }
+
+        if !confirmed {
+            println!();
+            println!("Dry run. Re-run with --yes to actually write.");
+            return Ok(());
+        }
+
+        nfc::write_uris(tx, tag, &uris, format)?;
+
+        // Verify by reading the message back off the tag.
+        let back = nfc::read_uris(tx, tag)?;
+        if back == uris {
+            println!("Wrote and verified {} record(s).", uris.len());
+            Ok(())
+        } else {
+            Err("write verification mismatch (read-back differs)".into())
+        }
+    })
 }
 
 /// Pad `data` up to a whole number of `reclen`-byte records with 0x00, matching

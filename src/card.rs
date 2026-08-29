@@ -1,3 +1,4 @@
+use crate::nfc::{self, NfcTag};
 use pcsc::{Card, Context, Disposition, Error as PcscError, Protocols, Scope, ShareMode};
 use std::cell::RefCell;
 use std::error::Error;
@@ -16,6 +17,9 @@ pub const SLE5528_SIZE: usize = 1024;
 pub enum CardKind {
     Sle5528,
     Acos3,
+    /// A contactless NFC tag. Its ATR is synthesised by the reader, so this is
+    /// recognised by shape rather than by an exact match.
+    Nfc(NfcTag),
     Unknown,
 }
 
@@ -25,16 +29,19 @@ impl CardKind {
             CardKind::Sle5528
         } else if atr == ACOS3_ATR {
             CardKind::Acos3
+        } else if let Some(tag) = nfc::from_atr(atr) {
+            CardKind::Nfc(tag)
         } else {
             CardKind::Unknown
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            CardKind::Sle5528 => "SLE (SLE5528 memory card, 1024 bytes)",
-            CardKind::Acos3 => "ACOS (ACS ACOS3 / ACOS3-32, filesystem-based)",
-            CardKind::Unknown => "Unknown",
+            CardKind::Sle5528 => "SLE (SLE5528 memory card, 1024 bytes)".into(),
+            CardKind::Acos3 => "ACOS (ACS ACOS3 / ACOS3-32, filesystem-based)".into(),
+            CardKind::Nfc(tag) => format!("NFC ({})", tag.label()),
+            CardKind::Unknown => "Unknown".into(),
         }
     }
 }

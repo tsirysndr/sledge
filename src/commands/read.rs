@@ -2,10 +2,16 @@ use crate::aturi::Dict;
 use crate::card::{CardKind, Connected, SLE5528_SIZE};
 use crate::cli::ReadArgs;
 use crate::util::{hexdump, parse_hex};
-use crate::{acos, sle};
+use crate::{acos, nfc, sle};
 use std::error::Error;
 
 pub fn run(c: &Connected, args: &ReadArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
+    // An NFC tag carries an NDEF message, not a byte range, so it decodes to
+    // URI records rather than to the payload blob the contact cards hold.
+    if let CardKind::Nfc(tag) = c.kind {
+        return read_nfc(c, args, tag);
+    }
+
     let data = match c.kind {
         CardKind::Sle5528 => {
             sle::select_type(c)?;
@@ -33,6 +39,7 @@ pub fn run(c: &Connected, args: &ReadArgs, dict: &Dict) -> Result<(), Box<dyn Er
                 acos::read_records(tx, start, reclen, max)
             })?
         }
+        CardKind::Nfc(_) => unreachable!("handled above"),
         CardKind::Unknown => return Err("unknown card type; cannot read".into()),
     };
 
@@ -54,4 +61,26 @@ pub fn run(c: &Connected, args: &ReadArgs, dict: &Dict) -> Result<(), Box<dyn Er
         }
     }
     Ok(())
+}
+
+/// Read an NFC tag: its NDEF URI records, or its raw user memory with --raw.
+fn read_nfc(c: &Connected, args: &ReadArgs, tag: nfc::NfcTag) -> Result<(), Box<dyn Error>> {
+    let raw = args.raw;
+    c.with_transaction(|tx| {
+        println!("UID: {}", nfc::uid(tx)?);
+        println!();
+        if raw {
+            hexdump(&nfc::read_memory(tx, tag)?);
+            return Ok(());
+        }
+        let uris = nfc::read_uris(tx, tag)?;
+        if uris.is_empty() {
+            println!("(no NDEF message)");
+        } else {
+            for uri in uris {
+                println!("{uri}");
+            }
+        }
+        Ok(())
+    })
 }

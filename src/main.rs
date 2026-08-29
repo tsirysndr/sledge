@@ -4,6 +4,8 @@ mod card;
 mod cli;
 mod commands;
 mod config;
+mod ndef;
+mod nfc;
 mod sle;
 mod util;
 

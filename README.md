@@ -3,15 +3,16 @@
 </p>
 
 A small Rust CLI that hammers on smart cards — inspect, read, and write **ACS
-memory cards** and **ACOS smart cards** through a PC/SC reader (built and tested
-with the **ACS ACR39U**). It detects the inserted card from its ATR and speaks
-the right protocol for each: the ACR39U memory-card pseudo-APDUs for synchronous
-SLE cards, and ISO 7816 for ACOS.
+memory cards**, **ACOS smart cards**, and **contactless NFC tags** through a
+PC/SC reader (built and tested with the **ACS ACR39U** and **ACR122U**). It
+detects the card from its ATR and speaks the right protocol for each: the
+ACR39U memory-card pseudo-APDUs for synchronous SLE cards, ISO 7816 for ACOS,
+and NDEF over the contactless pseudo-APDUs for NFC tags.
 
-> **Card support at a glance:** SLE memory cards and ACOS3 cards are both
-> supported and tested for **read and write**. ACOS3 writes to a protected file
-> need the card's code submitted first (`--pin`); without it the write is
-> rejected with `69 82`.
+> **Card support at a glance:** SLE memory cards, ACOS3 cards, and NFC tags
+> (NTAG21x / MIFARE Ultralight and MIFARE Classic) are all supported for
+> **read and write**. ACOS3 writes to a protected file need the card's code
+> submitted first (`--pin`); without it the write is rejected with `69 82`.
 
 ```console
 $ sledge detect
@@ -24,13 +25,18 @@ Card: SLE (SLE5528 memory card, 1024 bytes)
 ## Features
 
 - **Automatic card detection** — identifies the card from its ATR and reports
-  whether it is an **SLE** memory card or an **ACOS** processor card.
+  whether it is an **SLE** memory card, an **ACOS** processor card, or a
+  contactless **NFC** tag (and which tag family).
 - **Read** — dump card memory as decoded text or a raw hex view, with
-  `--offset` / `--length` control.
+  `--offset` / `--length` control; NFC tags decode to their NDEF URI records.
 - **Write** — write text into the card, with `0xFF` padding, read-back
-  verification, and a dry-run mode by default.
+  verification, and a dry-run mode by default. On NFC, the text is written as
+  an NDEF message any phone can read.
+- **NFC tags** — NTAG21x / MIFARE Ultralight (NFC Forum Type 2) and MIFARE
+  Classic, with per-sector key exchange and one-time NDEF formatting for blank
+  Classic tags.
 - **Full inspect** — ATR, card type, presentation-error-counter state, and a
-  complete hex dump saved to `sle5528.bin`.
+  complete hex dump saved to `sle5528.bin` (or `nfc-tag.bin` for a tag).
 - **Memory-card aware connection** — transparently connects synchronous memory
   cards over the RAW protocol (they cannot negotiate T=0/T=1) and processor
   cards over T=0/T=1.
@@ -47,14 +53,19 @@ Card: SLE (SLE5528 memory card, 1024 bytes)
 |------|------|----------|--------|
 | Infineon **SLE5528** (SLE4428-compatible) | Synchronous memory | 1024 bytes | Read + write, tested |
 | ACS **ACOS3 / ACOS3-32** | Microprocessor (record files) | 32 KB | Read + write tested (write needs card code) |
+| **NTAG213 / 215 / 216**, MIFARE Ultralight | Contactless, NFC Forum Type 2 | 144 / 504 / 888 bytes | Read + write (NDEF) |
+| **MIFARE Classic** 1K / 4K / Mini / Plus | Contactless, 16-byte blocks | 720 / 1488 / 192 bytes of NDEF | Read + write (NDEF, AN1305 mapping) |
 
 Other SLE44xx/55xx memory cards use the same command family and may work with
-adjusted ATR constants.
+adjusted ATR constants. A contactless tag whose reader-synthesised ATR is not
+one of the names above is treated as Type 2, which is what an unbranded NTAG
+clone almost always is.
 
 ## Requirements
 
 - Rust (edition 2024) and Cargo.
-- A PC/SC reader such as the ACS ACR39U.
+- A PC/SC reader: the ACS ACR39U for contact cards, the ACR122U (or any
+  CCID reader that exposes the contactless pseudo-APDUs) for NFC tags.
 - A working PC/SC stack:
   - **Linux** — `pcscd` plus a CCID driver with ACS memory-card support
     (`libacsccid` / distribution `libacsccid1`).
@@ -103,8 +114,9 @@ cargo build --release
 sledge [--reader <INDEX>] <COMMAND>
 
 Commands:
-  detect    Print only the detected card type (SLE or ACOS) and its ATR
-  inspect   Detect the card and print full info, dumping SLE memory to a file
+  readers   List connected PC/SC readers with their indices
+  detect    Print only the detected card type (SLE, ACOS or NFC) and its ATR
+  inspect   Detect the card and print full info, dumping memory to a file
   read      Read text from the card
   write     Write text to the card
 
@@ -121,7 +133,8 @@ sledge detect
 ### Inspect
 
 Prints the ATR, card type, error-counter state, and a full hex dump, and saves
-the raw memory to `sle5528.bin`:
+the raw memory to `sle5528.bin`. On an NFC tag it prints the UID, tag family,
+usable memory, lock/format state and NDEF records, and saves `nfc-tag.bin`:
 
 ```bash
 sledge inspect
@@ -152,6 +165,15 @@ sledge read --file FF04 --record 2      # start from record 2
 | `--pin <STR>` | (ACOS) code to submit before reading a protected file (ASCII) |
 | `--code <N>` | (ACOS) code reference for `--pin` (default `7` = Issuer Code) |
 
+On an NFC tag, `read` prints the tag UID and then each NDEF URI record in tag
+order; the offset/length/file flags do not apply. `--raw` hex-dumps the tag's
+user memory instead:
+
+```bash
+sledge --reader ACR122U read          # the tag's URI records
+sledge --reader ACR122U read --raw    # the tag's user memory
+```
+
 ### Write
 
 Writes are a **dry run** unless you pass `--yes`:
@@ -164,6 +186,14 @@ sledge write "hello card" --offset 64 --psc FFFF --yes
 # ACOS — write records into a file, submitting the card's code first.
 # ACOSTEST is the ACOS3 factory-default Issuer Code (code slot 7).
 sledge write "sledge" --file FF04 --record 3 --pin ACOSTEST --yes
+
+# NFC — one URI record per line, the first being the one a reader acts on
+sledge write "https://example.com" --yes
+sledge write "$(printf 'at://did:plc:xyz/app.rocksky.album/3k\nrocksky://library/album/42')" --yes
+
+# NFC — a blank MIFARE Classic tag needs formatting once (it is blank, so
+# nothing is lost); a phone does the same thing silently
+sledge write "https://example.com" --format --yes
 ```
 
 | Flag | Meaning |
@@ -175,6 +205,7 @@ sledge write "sledge" --file FF04 --record 3 --pin ACOSTEST --yes
 | `--record <N>` | (ACOS) record number to start writing at (default `0`) |
 | `--pin <STR>` | (ACOS) code to submit before writing (ASCII) |
 | `--code <N>` | (ACOS) code reference for `--pin` (SUBMIT CODE P1; default `7` = Issuer Code, `0-6` = PIN / application codes) |
+| `--format` | (NFC) NDEF-format a blank MIFARE Classic tag before writing |
 | `--yes` | Actually perform the write (otherwise dry run) |
 
 For ACOS, records have a fixed length that `sledge` auto-detects; the text is
@@ -185,6 +216,26 @@ no stale data behind. Pass `--length N` to instead write exactly `N` bytes and
 leave the remaining records untouched (useful with `--record` to update a single
 record). Writing to a protected file without the correct `--pin` fails with
 `69 82`.
+
+#### NFC tags
+
+An NFC tag is meant to be readable by anything that taps it, so `write` stores
+the text as an **NDEF message** rather than the compact `at://` encoding the
+contact cards use. Each newline-separated line becomes one NDEF URI record, in
+order: a reader tries them front to back, so the first line is the one that
+acts and the rest are fallbacks. Known schemes (`https://`, `tel:`, …) are
+abbreviated per the NFC Forum URI RTD; `at://` and `rocksky://` are stored
+whole. The message is written back-to-front — the page holding the TLV header
+goes last — so a tag pulled off the reader mid-write reads as blank rather than
+as a corrupt half-record, and the write is verified by reading it back.
+
+MIFARE Classic stores the same message in 16-byte blocks behind a per-sector
+key exchange (NXP AN1305). A tag straight out of the packet has no NDEF mapping
+at all, and `--format` writes one — only ever on a tag still answering to the
+factory key, and the sector trailers stay rewritable, so it is reversible.
+A Classic tag locked with third-party keys is refused. A Type 2 tag whose
+capability container says read-only (or whose lock bits are burned) is refused
+too: that lock is irreversible.
 
 #### ⚠️ The security code (PSC)
 
