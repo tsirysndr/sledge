@@ -78,9 +78,11 @@ impl Connected {
     pub fn transmit(&self, apdu: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         match self.transmit_once(apdu) {
             Err(PcscError::ResetCard) => {
-                self.card
-                    .borrow_mut()
-                    .reconnect(ShareMode::Shared, self.protocols, Disposition::LeaveCard)?;
+                self.card.borrow_mut().reconnect(
+                    ShareMode::Shared,
+                    self.protocols,
+                    Disposition::LeaveCard,
+                )?;
                 self.transmit_once(apdu).map_err(Self::map_err)
             }
             other => other.map_err(Self::map_err),
@@ -111,12 +113,16 @@ impl Connected {
 /// Synchronous memory cards (SLE5528) only speak the reader's RAW protocol;
 /// negotiating T=0/T=1 against one yields SCARD_W_UNRESPONSIVE_CARD. So try
 /// T=0/T=1 first, then fall back to RAW.
-fn connect_card(ctx: &Context, reader: &std::ffi::CStr) -> Result<(Card, Protocols), Box<dyn Error>> {
+fn connect_card(
+    ctx: &Context,
+    reader: &std::ffi::CStr,
+) -> Result<(Card, Protocols), Box<dyn Error>> {
     match ctx.connect(reader, ShareMode::Shared, Protocols::ANY) {
         Ok(card) => Ok((card, Protocols::ANY)),
-        Err(PcscError::UnresponsiveCard | PcscError::ProtoMismatch) => {
-            Ok((ctx.connect(reader, ShareMode::Shared, Protocols::RAW)?, Protocols::RAW))
-        }
+        Err(PcscError::UnresponsiveCard | PcscError::ProtoMismatch) => Ok((
+            ctx.connect(reader, ShareMode::Shared, Protocols::RAW)?,
+            Protocols::RAW,
+        )),
         Err(e) => Err(e.into()),
     }
 }

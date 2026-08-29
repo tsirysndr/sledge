@@ -93,6 +93,9 @@ fn write_acos(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box
 
     acos::select_file(c, &file_id)?;
     acos::update_binary(c, args.offset, payload)?;
-    println!("Wrote {} bytes (card accepted the UPDATE BINARY).", payload.len());
+    println!(
+        "Wrote {} bytes (card accepted the UPDATE BINARY).",
+        payload.len()
+    );
     Ok(())
 }

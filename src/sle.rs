@@ -75,7 +75,11 @@ pub fn present_psc(c: &Connected, psc: &[u8]) -> Result<(), Box<dyn Error>> {
             ec
         )
         .into()),
-        (sw1, sw2) => Err(format!("PSC verification failed: card returned SW {:02X} {:02X}", sw1, sw2).into()),
+        (sw1, sw2) => Err(format!(
+            "PSC verification failed: card returned SW {:02X} {:02X}",
+            sw1, sw2
+        )
+        .into()),
     }
 }
 
