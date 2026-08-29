@@ -2,8 +2,6 @@
   <img src="assets/logo.svg" alt="sledge" width="440">
 </p>
 
-<h1 align="center">sledge</h1>
-
 A small Rust CLI that hammers on smart cards — inspect, read, and write **ACS
 memory cards** and **ACOS smart cards** through a PC/SC reader (built and tested
 with the **ACS ACR39U**). It detects the inserted card from its ATR and speaks
