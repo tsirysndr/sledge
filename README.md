@@ -22,6 +22,30 @@ ATR: 3B0492231091
 Card: SLE (SLE5528 memory card, 1024 bytes)
 ```
 
+## Contents
+
+- [Features](#features)
+- [Supported cards](#supported-cards)
+- [Requirements](#requirements)
+  - [macOS driver note (important for SLE cards)](#macos-driver-note-important-for-sle-cards)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Detect](#detect)
+  - [Inspect](#inspect)
+  - [Read](#read)
+  - [Write](#write)
+    - [NFC tags](#nfc-tags)
+  - [Clear](#clear)
+    - [⚠️ The security code (PSC)](#️-the-security-code-psc)
+- [Working with ACOS3 cards](#working-with-acos3-cards)
+  - [Storing AT-URIs (`at://`)](#storing-at-uris-at)
+    - [Extending the dictionaries (config file)](#extending-the-dictionaries-config-file)
+  - [⚠️ ACOS3 code safety](#️-acos3-code-safety)
+- [Project layout](#project-layout)
+- [How it works](#how-it-works)
+- [Disclaimer](#disclaimer)
+- [License](#license)
+
 ## Features
 
 - **Automatic card detection** — identifies the card from its ATR and reports

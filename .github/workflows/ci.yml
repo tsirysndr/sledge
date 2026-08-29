@@ -1,0 +1,95 @@
+name: ci
+
+on: push
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A branch pushed twice in quick succession only needs its newest commit
+# checked; the older run is cancelled rather than left racing the new one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both host platforms the tool is used on. The tests are pure unit
+        # tests — no reader or card is touched — so they run anywhere.
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pcsc-sys needs libpcsclite via pkg-config on Linux. macOS links the
+      # PCSC framework, which ships with the OS, so it needs nothing.
+      - name: Install PC/SC development files
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkgconf libpcsclite-dev
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Test
+        run: cargo test --locked --all-features
+
+      - name: Build
+        run: cargo build --locked --all-features
+
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PC/SC development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkgconf libpcsclite-dev
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update --component rustfmt,clippy
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PC/SC development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkgconf libpcsclite-dev
+
+      # Keeps the rust-version in Cargo.toml honest: it is what `cargo install`
+      # checks against, so a silent bump would only surface as a stranger's
+      # failed install.
+      - name: Install the declared MSRV toolchain
+        run: |
+          msrv=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["rust_version"])')
+          echo "Declared MSRV: $msrv"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+          rustup default "$msrv"
+
+      - name: Build
+        run: cargo build --locked --all-features

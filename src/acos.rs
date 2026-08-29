@@ -79,10 +79,8 @@ pub fn read_records(
     let mut out = Vec::new();
     let mut rec = start;
     while rec <= 0xFF {
-        if let Some(max) = max_bytes {
-            if out.len() >= max {
-                break;
-            }
+        if max_bytes.is_some_and(|max| out.len() >= max) {
+            break;
         }
         let r = tx.transmit(&[CLA, 0xB2, rec as u8, 0x00, reclen as u8])?;
         match sw(&r) {

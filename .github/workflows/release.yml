@@ -87,14 +87,18 @@ jobs:
       # The tag may already have a release attached to it (one cut from the
       # GitHub UI, or a re-run of this workflow), in which case the assets are
       # replaced rather than the whole thing failing.
+      #
+      # --repo is not optional here: this job never checks the source out, so
+      # there is no git remote for gh to infer the repository from.
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          if gh release view "$GITHUB_REF_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GH_REPO" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GH_REPO" \
               --title "$GITHUB_REF_NAME" --generate-notes
           fi
