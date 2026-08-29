@@ -1,7 +1,9 @@
 mod acos;
+mod aturi;
 mod card;
 mod cli;
 mod commands;
+mod config;
 mod sle;
 mod util;
 
@@ -23,14 +25,15 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    let dict = config::load(cli.config.as_deref())?;
     let c = card::connect(cli.reader)?;
     println!();
 
     match &cli.command {
         Command::Detect => commands::detect::run(&c),
         Command::Inspect => commands::inspect::run(&c)?,
-        Command::Read(args) => commands::read::run(&c, args)?,
-        Command::Write(args) => commands::write::run(&c, args)?,
+        Command::Read(args) => commands::read::run(&c, args, &dict)?,
+        Command::Write(args) => commands::write::run(&c, args, &dict)?,
     }
 
     Ok(())

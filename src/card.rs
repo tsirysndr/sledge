@@ -105,6 +105,36 @@ impl Connected {
             e => e.into(),
         }
     }
+
+    /// Run `f` inside a PC/SC transaction, which holds an exclusive lock on the
+    /// card for the whole sequence. ACOS (a T=0 processor card) needs this: on
+    /// macOS the CryptoTokenKit daemon touches the shared card between our
+    /// APDUs and resets it, so a bare multi-APDU flow (SELECT then READ) is
+    /// constantly interrupted with SCARD_W_RESET_CARD. The lock stops that.
+    pub fn with_transaction<R>(
+        &self,
+        f: impl FnOnce(&Txn) -> Result<R, Box<dyn Error>>,
+    ) -> Result<R, Box<dyn Error>> {
+        let mut card = self.card.borrow_mut();
+        let tx = card.transaction()?;
+        f(&Txn { tx })
+    }
+}
+
+/// A card locked inside a transaction. Exposes the same `transmit` shape as
+/// [`Connected`] so command code can be written against either.
+pub struct Txn<'a> {
+    tx: pcsc::Transaction<'a>,
+}
+
+impl Txn<'_> {
+    pub fn transmit(&self, apdu: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut recv = [0u8; 4096];
+        self.tx
+            .transmit(apdu, &mut recv)
+            .map(|r| r.to_vec())
+            .map_err(Connected::map_err)
+    }
 }
 
 /// Connect to a card, handling both microprocessor and memory cards.

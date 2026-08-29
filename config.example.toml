@@ -1,0 +1,21 @@
+# sledge configuration — AT-URI dictionaries.
+#
+# Copy to ~/.config/sledge/config.toml, or pass with:  sledge --config <path>
+#
+# Both lists are index-addressed and APPEND-ONLY: the bytes written to a card
+# reference entries by position, so reading a card back needs the same config
+# that wrote it. Only ever append; never reorder or remove entries.
+
+# Extra collection NSIDs, appended after the built-ins
+# (app.rocksky.playlist, app.rocksky.album, app.rocksky.artist).
+# An unknown collection is rejected until it is listed here.
+collections = [
+    # "app.rocksky.scrobble",
+    # "com.example.thing",
+]
+
+# Authorities (DIDs / handles) to encode as a 1-byte dictionary index — the
+# most compact form. Ideal for a DID you store on many cards.
+authorities = [
+    # "did:plc:7vdlgi2bflelz7mmuxoqjfcr",
+]

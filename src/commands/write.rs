@@ -1,27 +1,44 @@
+use crate::aturi::Dict;
 use crate::card::{CardKind, Connected};
 use crate::cli::WriteArgs;
 use crate::util::parse_hex;
 use crate::{acos, sle};
 use std::error::Error;
 
-pub fn run(c: &Connected, args: &WriteArgs) -> Result<(), Box<dyn Error>> {
-    // Build the payload: the text, optionally padded with 0xFF to --length.
-    let mut payload = args.text.as_bytes().to_vec();
-    if let Some(len) = args.length {
-        if payload.len() > len {
-            return Err(format!("text is {} bytes but --length is {}", payload.len(), len).into());
-        }
-        payload.resize(len, 0xFF);
-    }
-
+pub fn run(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
     match c.kind {
-        CardKind::Sle5528 => write_sle(c, args, &payload),
-        CardKind::Acos3 => write_acos(c, args, &payload),
+        CardKind::Sle5528 => write_sle(c, args, dict),
+        CardKind::Acos3 => write_acos(c, args, dict),
         CardKind::Unknown => Err("unknown card type; cannot write".into()),
     }
 }
 
-fn write_sle(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box<dyn Error>> {
+/// Build the write payload: the text, optionally padded up to `--length` with
+/// `fill` (SLE uses 0xFF for its erased state; ACOS uses 0x00). An `at://` URI
+/// is compactly encoded first (auto-detected); anything else is stored as text.
+fn payload(args: &WriteArgs, fill: u8, dict: &Dict) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut p = if crate::aturi::looks_like_aturi(&args.text) {
+        let enc = crate::aturi::encode(&args.text, dict)?;
+        println!(
+            "Detected at:// URI — encoded {} → {} bytes.",
+            args.text.len(),
+            enc.len()
+        );
+        enc
+    } else {
+        args.text.as_bytes().to_vec()
+    };
+    if let Some(len) = args.length {
+        if p.len() > len {
+            return Err(format!("payload is {} bytes but --length is {}", p.len(), len).into());
+        }
+        p.resize(len, fill);
+    }
+    Ok(p)
+}
+
+fn write_sle(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
+    let payload = &payload(args, 0xFF, dict)?;
     let psc_hex = args.psc.as_deref().ok_or(
         "writing an SLE card requires --psc <hex> (the security code).\n\
          A WRONG code decrements the error counter and can permanently\n\
@@ -62,7 +79,7 @@ fn write_sle(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box<
 
     // Verify by reading the region back.
     let back = sle::read(c, args.offset, payload.len())?;
-    if back == payload {
+    if back == *payload {
         println!("Wrote and verified {} bytes.", payload.len());
         Ok(())
     } else {
@@ -70,20 +87,39 @@ fn write_sle(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box<
     }
 }
 
-fn write_acos(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box<dyn Error>> {
-    let file = args
-        .file
-        .as_deref()
-        .ok_or("ACOS cards require --file <ID> (hex EF id, e.g. FF04)")?;
+fn write_acos(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
+    let payload = &payload(args, 0x00, dict)?;
+    // ACOS defaults to the user data file FF04 when --file is omitted.
+    let file = args.file.as_deref().unwrap_or("FF04");
     let file_id = parse_hex("--file", file)?;
+    let pin = args.pin.as_ref().map(|p| p.as_bytes().to_vec());
+
+    // Without an explicit --length, a text write owns the file: the rest of the
+    // records (after the text) are cleared to 0x00 so no stale data is left.
+    let clear_rest = args.length.is_none();
 
     println!();
     println!(
-        "Plan: SELECT {} then UPDATE BINARY {} bytes at offset {}.",
+        "Plan: SELECT {} → WRITE RECORD {} byte(s) starting at record {}{}.",
         hex::encode_upper(&file_id),
         payload.len(),
-        args.offset
+        args.record,
+        if clear_rest {
+            ", then clear the rest of the file"
+        } else {
+            ""
+        }
     );
+    match &pin {
+        Some(p) => println!(
+            "      submit code slot {} ({} bytes) first.",
+            args.code,
+            p.len()
+        ),
+        None => {
+            println!("      no code will be submitted (protected files will reject the write).")
+        }
+    }
 
     if !args.yes {
         println!();
@@ -91,11 +127,63 @@ fn write_acos(c: &Connected, args: &WriteArgs, payload: &[u8]) -> Result<(), Box
         return Ok(());
     }
 
-    acos::select_file(c, &file_id)?;
-    acos::update_binary(c, args.offset, payload)?;
-    println!(
-        "Wrote {} bytes (card accepted the UPDATE BINARY).",
-        payload.len()
-    );
-    Ok(())
+    let start = args.record;
+    let code = args.code;
+    let written = c.with_transaction(|tx| {
+        acos::select_file(tx, &file_id)?;
+        if let Some(p) = &pin {
+            acos::submit_code(tx, code, p)?;
+            println!("Code accepted.");
+        }
+        let reclen = acos::record_len(tx)?;
+
+        // Pre-flight capacity check so we never do a partial write.
+        let count = acos::record_count(tx, reclen)?;
+        let available = count.saturating_sub(start) * reclen;
+        if payload.len() > available {
+            return Err(format!(
+                "{} bytes won't fit: file {} has {} bytes free from record {} \
+                 ({} records × {} bytes). Use a larger file or shorter data.",
+                payload.len(),
+                hex::encode_upper(&file_id),
+                available,
+                start,
+                count,
+                reclen
+            )
+            .into());
+        }
+
+        acos::write_records(tx, start, reclen, payload)?;
+
+        if clear_rest {
+            let used = payload.len().div_ceil(reclen);
+            let cleared = acos::clear_records_from(tx, start + used, reclen)?;
+            if cleared > 0 {
+                println!("Cleared {cleared} trailing record(s) to 0x00.");
+            }
+        }
+
+        // Verify by reading the same records back.
+        let back = acos::read_records(tx, start, reclen, Some(payload.len()))?;
+        Ok(back.starts_with(payload) || back == pad(payload, reclen))
+    })?;
+
+    if written {
+        println!("Wrote and verified {} byte(s).", payload.len());
+        Ok(())
+    } else {
+        Err("write verification mismatch (read-back differs)".into())
+    }
+}
+
+/// Pad `data` up to a whole number of `reclen`-byte records with 0x00, matching
+/// how `write_records` stores the final record.
+fn pad(data: &[u8], reclen: usize) -> Vec<u8> {
+    let mut v = data.to_vec();
+    let rem = v.len() % reclen;
+    if rem != 0 {
+        v.resize(v.len() + (reclen - rem), 0x00);
+    }
+    v
 }

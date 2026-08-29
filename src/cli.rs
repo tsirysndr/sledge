@@ -8,6 +8,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 0, global = true)]
     pub reader: usize,
 
+    /// Path to a TOML config file with extra AT-URI collections/authorities.
+    /// Defaults to ~/.config/sledge/config.toml if present.
+    #[arg(long, global = true)]
+    pub config: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -44,6 +49,18 @@ pub struct ReadArgs {
     /// (ACOS only) EF file ID to select first, in hex, e.g. FF04.
     #[arg(long)]
     pub file: Option<String>,
+
+    /// (ACOS only) Record number to start reading from.
+    #[arg(long, default_value_t = 0)]
+    pub record: usize,
+
+    /// (ACOS only) Code/PIN to submit before reading a protected file (ASCII).
+    #[arg(long)]
+    pub pin: Option<String>,
+
+    /// (ACOS only) Code reference for `--pin` (SUBMIT CODE P1; 7 = Issuer Code).
+    #[arg(long, default_value_t = 7)]
+    pub code: u8,
 }
 
 #[derive(Args)]
@@ -66,6 +83,20 @@ pub struct WriteArgs {
     /// (ACOS only) EF file ID to select first, in hex, e.g. FF04.
     #[arg(long)]
     pub file: Option<String>,
+
+    /// (ACOS only) Record number to start writing at.
+    #[arg(long, default_value_t = 0)]
+    pub record: usize,
+
+    /// (ACOS only) Code/PIN to submit before writing, as ASCII (writes to a
+    /// protected file need this).
+    #[arg(long)]
+    pub pin: Option<String>,
+
+    /// (ACOS only) Code reference for the PIN (the SUBMIT CODE P1; 7 = Issuer
+    /// Code, 0-6 = PIN / application codes).
+    #[arg(long, default_value_t = 7)]
+    pub code: u8,
 
     /// Actually perform the write. Without this flag the command is a dry run.
     #[arg(long)]
