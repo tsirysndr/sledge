@@ -105,11 +105,28 @@ If a memory-card command returns `NotTransacted`, this driver is not active.
 ## Installation
 
 ```bash
+cargo install sledge
+```
+
+Or grab a prebuilt binary from the [releases page][releases] — macOS
+(aarch64) and Linux (x86_64, aarch64) are published for every tag.
+
+From source:
+
+```bash
 git clone https://github.com/tsirysndr/sledge.git
 cd sledge
 cargo build --release
 # binary at target/release/sledge
 ```
+
+Building needs Rust 1.87 or newer, and on Linux the `libpcsclite` headers
+(`sudo apt install pkgconf libpcsclite-dev`, or your distribution's
+equivalent). macOS links the system PCSC framework and needs nothing extra to
+build — but see the driver note above for what it takes to *talk to* a memory
+card.
+
+[releases]: https://github.com/tsirysndr/sledge/releases
 
 ## Usage
 

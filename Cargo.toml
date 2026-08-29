@@ -2,9 +2,17 @@
 name = "sledge"
 version = "0.1.0"
 edition = "2024"
-description = "A smart-card read/write CLI for ACS memory (SLE) and ACOS cards over PC/SC"
+# usize::is_multiple_of, which the NDEF padding uses, landed in 1.87.
+rust-version = "1.87"
+description = "Read and write ACS memory (SLE), ACOS smart cards, and NFC tags over PC/SC"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/tsirysndr/sledge"
+homepage = "https://github.com/tsirysndr/sledge"
+keywords = ["smartcard", "pcsc", "nfc", "ndef", "cli"]
+categories = ["command-line-utilities", "hardware-support"]
+# CI config is of no use to anyone installing the crate.
+exclude = ["/.github"]
 
 [[bin]]
 name = "sledge"
@@ -16,4 +24,3 @@ hex = "0.4"
 clap = { version = "4.6.6", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.4"
-

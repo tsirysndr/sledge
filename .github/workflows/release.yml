@@ -1,0 +1,100 @@
+name: Release
+
+# Cutting a release is pushing a tag. Everything below hangs off that, so the
+# tag name is the version — there is no second place to bump.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One target failing shouldn't cost the artifacts of the others — a
+      # partial release can be topped up by re-running the failed job alone.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          # Native ARM runners rather than a cross toolchain: pcsc-sys links
+          # libpcsclite through pkg-config, and cross-compiling that means a
+          # multiarch sysroot for a build that a real arm64 runner does for
+          # free. These are available to public repositories.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pcsc-sys needs libpcsclite via pkg-config on Linux. macOS links the
+      # PCSC framework, which ships with the OS, so it needs nothing.
+      - name: Install PC/SC development files
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkgconf libpcsclite-dev
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          name="sledge-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/sledge" README.md LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          echo "asset=$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz | tee SHA256SUMS
+
+      # The tag may already have a release attached to it (one cut from the
+      # GitHub UI, or a re-run of this workflow), in which case the assets are
+      # replaced rather than the whole thing failing.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
