@@ -35,6 +35,9 @@ pub enum Command {
 
     /// Write text to the card.
     Write(WriteArgs),
+
+    /// Erase the card's data back to its blank state.
+    Clear(ClearArgs),
 }
 
 #[derive(Args)]
@@ -114,6 +117,45 @@ pub struct WriteArgs {
     pub format: bool,
 
     /// Actually perform the write. Without this flag the command is a dry run.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Args)]
+pub struct ClearArgs {
+    /// (SLE only) Start address / offset in bytes. Defaults past the protected
+    /// header, matching where `write` puts data.
+    #[arg(long, default_value_t = 32)]
+    pub offset: usize,
+
+    /// Number of bytes to clear (SLE default: the 256-byte write span; ACOS
+    /// default: to the end of the file). Ignored for NFC, which always clears
+    /// the whole tag.
+    #[arg(long)]
+    pub length: Option<usize>,
+
+    /// (SLE only) Security code (PSC) in hex, e.g. FFFF. Required to unlock the
+    /// erase.
+    #[arg(long)]
+    pub psc: Option<String>,
+
+    /// (ACOS only) EF file ID to select first, in hex, e.g. FF04.
+    #[arg(long)]
+    pub file: Option<String>,
+
+    /// (ACOS only) Record number to start clearing at.
+    #[arg(long, default_value_t = 0)]
+    pub record: usize,
+
+    /// (ACOS only) Code/PIN to submit before clearing a protected file (ASCII).
+    #[arg(long)]
+    pub pin: Option<String>,
+
+    /// (ACOS only) Code reference for `--pin` (SUBMIT CODE P1; 7 = Issuer Code).
+    #[arg(long, default_value_t = 7)]
+    pub code: u8,
+
+    /// Actually perform the erase. Without this flag the command is a dry run.
     #[arg(long)]
     pub yes: bool,
 }

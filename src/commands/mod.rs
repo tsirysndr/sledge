@@ -1,3 +1,4 @@
+pub mod clear;
 pub mod detect;
 pub mod inspect;
 pub mod read;

@@ -35,6 +35,9 @@ Card: SLE (SLE5528 memory card, 1024 bytes)
 - **NFC tags** — NTAG21x / MIFARE Ultralight (NFC Forum Type 2) and MIFARE
   Classic, with per-sector key exchange and one-time NDEF formatting for blank
   Classic tags.
+- **Clear** — erase a card back to its blank state (`0xFF` on SLE, zeroed
+  records on ACOS, an empty NDEF message on NFC), with the same dry-run and
+  read-back verification as `write`.
 - **Full inspect** — ATR, card type, presentation-error-counter state, and a
   complete hex dump saved to `sle5528.bin` (or `nfc-tag.bin` for a tag).
 - **Memory-card aware connection** — transparently connects synchronous memory
@@ -119,6 +122,7 @@ Commands:
   inspect   Detect the card and print full info, dumping memory to a file
   read      Read text from the card
   write     Write text to the card
+  clear     Erase the card's data back to its blank state
 
 Options:
   --reader <INDEX>   0-based index into the PC/SC reader list [default: 0]
@@ -236,6 +240,48 @@ factory key, and the sector trailers stay rewritable, so it is reversible.
 A Classic tag locked with third-party keys is refused. A Type 2 tag whose
 capability container says read-only (or whose lock bits are burned) is refused
 too: that lock is irreversible.
+
+### Clear
+
+Erases the card back to its blank state. Like `write`, it is a **dry run**
+unless you pass `--yes`, and it verifies by reading the region back. "Blank"
+means whatever a factory card of that family reads back as:
+
+| Card | Erased to | Default extent |
+|------|-----------|----------------|
+| SLE | `0xFF` | the 256-byte write span from `--offset` |
+| ACOS | `0x00` records | `--record` to the end of the file |
+| NFC | an empty NDEF message, user memory zeroed | the whole tag |
+
+```bash
+# SLE — needs the PSC, same as a write
+sledge clear --psc FFFF --yes
+
+# ACOS — wipe a file, or just part of it
+sledge clear --file FF04 --pin ACOSTEST --yes
+sledge clear --file FF04 --record 3 --length 32 --pin ACOSTEST --yes
+
+# NFC — leaves an empty (but still formatted) tag
+sledge --reader ACR122U clear --yes
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--psc <HEX>` | (SLE) security code. **Required** to unlock the erase |
+| `--offset <N>` | (SLE) start byte (default `32`) |
+| `--length <N>` | Bytes to clear (SLE: default the write span; ACOS: default to end of file). Ignored for NFC |
+| `--file <HEX>` | (ACOS) file ID to `SELECT` (default `FF04`) |
+| `--record <N>` | (ACOS) record to start clearing at (default `0`) |
+| `--pin <STR>` | (ACOS) code to submit first (ASCII) |
+| `--code <N>` | (ACOS) code reference for `--pin` (default `7`) |
+| `--yes` | Actually perform the erase (otherwise dry run) |
+
+An NFC tag is erased to an **empty NDEF message** rather than to all-zeroes: a
+tag wiped to zeroes has no NDEF mapping left and a phone reports it as
+unformatted, where an empty message reads as the blank-but-writable tag you
+asked for. The memory behind the message is zeroed all the same, so nothing of
+the old records survives past the new terminator. A factory-blank MIFARE
+Classic tag has no mapping to erase, so it is left alone rather than formatted.
 
 #### ⚠️ The security code (PSC)
 

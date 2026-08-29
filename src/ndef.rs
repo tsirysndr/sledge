@@ -252,6 +252,14 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_message_is_a_valid_tlv_with_no_records() {
+        let bytes = encode_uris(&[], 4);
+        assert_eq!(bytes, vec![0x03, 0x00, 0xFE, 0x00]);
+        assert_eq!(find_tlv(&bytes), Some(&[][..]));
+        assert!(uri_records(find_tlv(&bytes).unwrap()).is_empty());
+    }
+
+    #[test]
     fn blank_memory_has_no_message() {
         assert!(find_tlv(&[0x00; 32]).is_none());
         assert!(find_tlv(&[0xFE, 0x00, 0x00]).is_none());

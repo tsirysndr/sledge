@@ -49,6 +49,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Command::Inspect => commands::inspect::run(&c)?,
         Command::Read(args) => commands::read::run(&c, args, &dict)?,
         Command::Write(args) => commands::write::run(&c, args, &dict)?,
+        Command::Clear(args) => commands::clear::run(&c, args)?,
     }
 
     Ok(())

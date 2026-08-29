@@ -480,6 +480,48 @@ pub fn read_uris(tx: &Txn, tag: NfcTag) -> Result<Vec<String>, Box<dyn Error>> {
         .unwrap_or_default())
 }
 
+/// Write a TLV across a Type 2 tag's pages.
+fn type2_write_ndef(tx: &Txn, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    if is_read_only(tx) {
+        return Err("this tag is locked read-only and can't be rewritten".into());
+    }
+
+    let room = capacity(tx);
+    if bytes.len() > room {
+        return Err(format!(
+            "this tag holds {room} bytes; the message needs {}. \
+             Use an NTAG215 or larger.",
+            bytes.len()
+        )
+        .into());
+    }
+
+    let pages: Vec<(u8, &[u8])> = bytes
+        .chunks(PAGE_LEN)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let page = u8::try_from(i)
+                .ok()
+                .and_then(|i| FIRST_DATA_PAGE.checked_add(i))
+                .ok_or("the message is longer than this tag can address")?;
+            Ok((page, chunk))
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+
+    // The first page carries the TLV header, and without it the message is not
+    // an NDEF message at all. Writing it last means a write that dies partway —
+    // tag pulled off the reader, memory smaller than it claimed — leaves a tag
+    // that reads as blank rather than as a corrupt half-record.
+    let (first, rest) = pages.split_at(1);
+    for (page, chunk) in rest {
+        write_page(tx, *page, chunk)?;
+    }
+    for (page, chunk) in first {
+        write_page(tx, *page, chunk)?;
+    }
+    Ok(())
+}
+
 /// Write `uris` as an NDEF message, replacing whatever the tag held.
 pub fn write_uris(
     tx: &Txn,
@@ -492,47 +534,40 @@ pub fn write_uris(
             let bytes = ndef::encode_uris(uris, CLASSIC_BLOCK_LEN);
             classic_write_ndef(tx, &bytes, sectors, format_blank)
         }
+        NfcTag::Type2 => type2_write_ndef(tx, &ndef::encode_uris(uris, PAGE_LEN)),
+    }
+}
+
+/// Erase the tag: an empty NDEF message, and the user memory behind it zeroed.
+///
+/// The empty message matters — a tag wiped to all-zeroes has no NDEF mapping at
+/// all and a phone reports it as unformatted, where an empty message reads as
+/// the blank-but-writable tag the user asked for. The zero fill behind it is
+/// what makes this an erase rather than a short write: nothing of the old
+/// message survives past the new terminator to be recovered.
+///
+/// Returns the number of bytes cleared.
+pub fn clear(tx: &Txn, tag: NfcTag) -> Result<usize, Box<dyn Error>> {
+    match tag {
+        NfcTag::Classic { sectors, .. } => {
+            // A factory-blank tag has no NDEF mapping to erase, and formatting
+            // one to then blank it would be a stranger thing to do than nothing.
+            if matches!(classic_state(tx), ClassicState::Blank) {
+                return Ok(0);
+            }
+            let room = (sectors as usize - 1) * CLASSIC_SECTOR_BYTES;
+            let mut bytes = ndef::encode_uris(&[], CLASSIC_BLOCK_LEN);
+            bytes.resize(room, 0x00);
+            classic_write_ndef(tx, &bytes, sectors, false)?;
+            Ok(room)
+        }
         NfcTag::Type2 => {
-            if is_read_only(tx) {
-                return Err("this tag is locked read-only and can't be rewritten".into());
-            }
-
             let room = capacity(tx);
-            let bytes = ndef::encode_uris(uris, PAGE_LEN);
-            if bytes.len() > room {
-                return Err(format!(
-                    "this tag holds {room} bytes; the message needs {}. \
-                     Use an NTAG215 or larger.",
-                    bytes.len()
-                )
-                .into());
-            }
-
-            let pages: Vec<(u8, &[u8])> = bytes
-                .chunks(PAGE_LEN)
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let page = u8::try_from(i)
-                        .ok()
-                        .and_then(|i| FIRST_DATA_PAGE.checked_add(i))
-                        .ok_or("the message is longer than this tag can address")?;
-                    Ok((page, chunk))
-                })
-                .collect::<Result<_, Box<dyn Error>>>()?;
-
-            // The first page carries the TLV header, and without it the message
-            // is not an NDEF message at all. Writing it last means a write that
-            // dies partway — tag pulled off the reader, memory smaller than it
-            // claimed — leaves a tag that reads as blank rather than as a
-            // corrupt half-record.
-            let (first, rest) = pages.split_at(1);
-            for (page, chunk) in rest {
-                write_page(tx, *page, chunk)?;
-            }
-            for (page, chunk) in first {
-                write_page(tx, *page, chunk)?;
-            }
-            Ok(())
+            let mut bytes = ndef::encode_uris(&[], PAGE_LEN);
+            bytes.resize(room.max(bytes.len()), 0x00);
+            let cleared = bytes.len();
+            type2_write_ndef(tx, &bytes)?;
+            Ok(cleared)
         }
     }
 }
