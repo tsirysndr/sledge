@@ -1,0 +1,17 @@
+[package]
+name = "sledge"
+version = "0.1.0"
+edition = "2024"
+description = "A smart-card read/write CLI for ACS memory (SLE) and ACOS cards over PC/SC"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "sledge"
+path = "src/main.rs"
+
+[dependencies]
+pcsc = "2"
+hex = "0.4"
+clap = { version = "4.6.6", features = ["derive"] }
+
