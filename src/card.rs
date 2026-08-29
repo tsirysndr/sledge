@@ -1,6 +1,7 @@
 use pcsc::{Card, Context, Disposition, Error as PcscError, Protocols, Scope, ShareMode};
 use std::cell::RefCell;
 use std::error::Error;
+use std::io::{BufRead, IsTerminal, Write};
 
 pub const SLE5528_ATR: &[u8] = &[0x3B, 0x04, 0x92, 0x23, 0x10, 0x91];
 
@@ -157,18 +158,121 @@ fn connect_card(
     }
 }
 
-pub fn connect(reader_index: usize) -> Result<Connected, Box<dyn Error>> {
+/// List the names of all connected PC/SC readers.
+pub fn list_readers() -> Result<Vec<String>, Box<dyn Error>> {
+    let ctx = Context::establish(Scope::User)?;
+    let mut readers_buf = [0u8; 2048];
+    match ctx.list_readers(&mut readers_buf) {
+        Ok(readers) => Ok(readers.map(|r| r.to_string_lossy().into_owned()).collect()),
+        Err(PcscError::NoReadersAvailable) => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn numbered(names: &[String], indices: &[usize]) -> String {
+    indices
+        .iter()
+        .map(|&i| format!("  [{}] {}", i, names[i]))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn all_indices(names: &[String]) -> Vec<usize> {
+    (0..names.len()).collect()
+}
+
+/// Pick a reader from `names` based on `selector`:
+/// - a number selects by 0-based index into the PC/SC reader list;
+/// - any other string matches a reader name case-insensitively (substring);
+/// - no selector uses the only reader, or asks interactively when several are
+///   plugged in (an error when stdin is not a terminal).
+fn select_reader(names: &[String], selector: Option<&str>) -> Result<usize, Box<dyn Error>> {
+    if names.is_empty() {
+        return Err("no PC/SC reader found (is one plugged in?)".into());
+    }
+
+    if let Some(sel) = selector {
+        if let Ok(index) = sel.parse::<usize>() {
+            if index >= names.len() {
+                return Err(
+                    format!("no PC/SC reader at index {index} ({} found)", names.len()).into(),
+                );
+            }
+            return Ok(index);
+        }
+
+        let needle = sel.to_lowercase();
+        let matches: Vec<usize> = (0..names.len())
+            .filter(|&i| names[i].to_lowercase().contains(&needle))
+            .collect();
+        return match matches.as_slice() {
+            [index] => Ok(*index),
+            [] => Err(format!(
+                "no reader matching {sel:?}; connected readers:\n{}",
+                numbered(names, &all_indices(names))
+            )
+            .into()),
+            _ => Err(format!(
+                "{sel:?} matches several readers, be more specific or use an index:\n{}",
+                numbered(names, &matches)
+            )
+            .into()),
+        };
+    }
+
+    if names.len() == 1 {
+        return Ok(0);
+    }
+
+    prompt_for_reader(names)
+}
+
+/// Interactively ask which of several readers to use.
+fn prompt_for_reader(names: &[String]) -> Result<usize, Box<dyn Error>> {
+    if !std::io::stdin().is_terminal() {
+        return Err(format!(
+            "{} readers found; pick one with --reader <index|name>:\n{}",
+            names.len(),
+            numbered(names, &all_indices(names))
+        )
+        .into());
+    }
+
+    // Prompt on stderr so piping stdout still works.
+    eprintln!("Several readers found:");
+    eprintln!("{}", numbered(names, &all_indices(names)));
+
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    loop {
+        eprint!("Select reader [0-{}]: ", names.len() - 1);
+        std::io::stderr().flush()?;
+
+        line.clear();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            return Err("no reader selected".into());
+        }
+        match line.trim().parse::<usize>() {
+            Ok(index) if index < names.len() => return Ok(index),
+            _ => eprintln!("Invalid selection."),
+        }
+    }
+}
+
+pub fn connect(selector: Option<&str>) -> Result<Connected, Box<dyn Error>> {
     let ctx = Context::establish(Scope::User)?;
 
     let mut readers_buf = [0u8; 2048];
-    let readers: Vec<_> = ctx.list_readers(&mut readers_buf)?.collect();
-    let reader = readers.get(reader_index).ok_or_else(|| {
-        format!(
-            "no PC/SC reader at index {} ({} found)",
-            reader_index,
-            readers.len()
-        )
-    })?;
+    let readers: Vec<_> = match ctx.list_readers(&mut readers_buf) {
+        Ok(readers) => readers.collect(),
+        Err(PcscError::NoReadersAvailable) => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let names: Vec<String> = readers
+        .iter()
+        .map(|r| r.to_string_lossy().into_owned())
+        .collect();
+    let reader = readers[select_reader(&names, selector)?];
 
     println!("Reader: {}", reader.to_string_lossy());
 

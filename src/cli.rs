@@ -4,9 +4,11 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "sledge", version, about)]
 pub struct Cli {
-    /// Reader to use, as a 0-based index into the PC/SC reader list.
-    #[arg(long, default_value_t = 0, global = true)]
-    pub reader: usize,
+    /// Reader to use: a 0-based index into the PC/SC reader list, or a
+    /// (case-insensitive) substring of the reader name. With several readers
+    /// plugged in and no --reader, an interactive picker is shown.
+    #[arg(long, global = true)]
+    pub reader: Option<String>,
 
     /// Path to a TOML config file with extra AT-URI collections/authorities.
     /// Defaults to ~/.config/sledge/config.toml if present.
@@ -19,6 +21,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// List connected PC/SC readers with their indices.
+    Readers,
+
     /// Print only the detected card type (SLE or ACOS) and its ATR.
     Detect,
 

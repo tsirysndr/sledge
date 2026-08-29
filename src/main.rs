@@ -25,11 +25,24 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+
+    if matches!(cli.command, Command::Readers) {
+        let names = card::list_readers()?;
+        if names.is_empty() {
+            println!("No PC/SC readers found.");
+        }
+        for (i, name) in names.iter().enumerate() {
+            println!("[{i}] {name}");
+        }
+        return Ok(());
+    }
+
     let dict = config::load(cli.config.as_deref())?;
-    let c = card::connect(cli.reader)?;
+    let c = card::connect(cli.reader.as_deref())?;
     println!();
 
     match &cli.command {
+        Command::Readers => unreachable!(),
         Command::Detect => commands::detect::run(&c),
         Command::Inspect => commands::inspect::run(&c)?,
         Command::Read(args) => commands::read::run(&c, args, &dict)?,
