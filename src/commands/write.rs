@@ -15,19 +15,19 @@ pub fn run(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn E
 
 /// Build the write payload: the text, optionally padded up to `--length` with
 /// `fill` (SLE uses 0xFF for its erased state; ACOS uses 0x00). An `at://` URI
-/// is compactly encoded first (auto-detected); anything else is stored as text.
+/// or `rocksky://favorites/<did>` is compactly encoded first (auto-detected);
+/// anything else is stored as text. Newlines split the text into payloads —
+/// compact blob, then the rest as text — matching rocksky-desktop's layout.
 fn payload(args: &WriteArgs, fill: u8, dict: &Dict) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut p = if crate::aturi::looks_like_aturi(&args.text) {
-        let enc = crate::aturi::encode(&args.text, dict)?;
+    let parts: Vec<&str> = args.text.split('\n').collect();
+    let mut p = crate::aturi::encode_payloads(&parts, dict)?;
+    if crate::aturi::is_encoded(&p) || crate::aturi::is_favorites(&p) {
         println!(
-            "Detected at:// URI — encoded {} → {} bytes.",
+            "Detected compact-encodable URI — encoded {} → {} bytes.",
             args.text.len(),
-            enc.len()
+            p.len()
         );
-        enc
-    } else {
-        args.text.as_bytes().to_vec()
-    };
+    }
     if let Some(len) = args.length {
         if p.len() > len {
             return Err(format!("payload is {} bytes but --length is {}", p.len(), len).into());
@@ -38,7 +38,17 @@ fn payload(args: &WriteArgs, fill: u8, dict: &Dict) -> Result<Vec<u8>, Box<dyn E
 }
 
 fn write_sle(c: &Connected, args: &WriteArgs, dict: &Dict) -> Result<(), Box<dyn Error>> {
-    let payload = &payload(args, 0xFF, dict)?;
+    let mut payload = payload(args, 0xFF, dict)?;
+    // Without an explicit --length, a write owns the whole span: pad with the
+    // erased value so nothing left by a longer previous write survives past
+    // the end of the new one. Matches rocksky-desktop's write behavior.
+    if args.length.is_none() {
+        let span = sle::WRITE_SPAN.min(crate::card::SLE5528_SIZE.saturating_sub(args.offset));
+        if payload.len() < span {
+            payload.resize(span, 0xFF);
+        }
+    }
+    let payload = &payload;
     let psc_hex = args.psc.as_deref().ok_or(
         "writing an SLE card requires --psc <hex> (the security code).\n\
          A WRONG code decrements the error counter and can permanently\n\

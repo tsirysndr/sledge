@@ -1,7 +1,7 @@
 use crate::aturi::Dict;
 use crate::card::{CardKind, Connected, SLE5528_SIZE};
 use crate::cli::ReadArgs;
-use crate::util::{decode_text, hexdump, parse_hex};
+use crate::util::{hexdump, parse_hex};
 use crate::{acos, sle};
 use std::error::Error;
 
@@ -9,7 +9,11 @@ pub fn run(c: &Connected, args: &ReadArgs, dict: &Dict) -> Result<(), Box<dyn Er
     let data = match c.kind {
         CardKind::Sle5528 => {
             sle::select_type(c)?;
-            let length = args.length.unwrap_or(SLE5528_SIZE - args.offset);
+            // Default to the write span, not the whole card: the tail holds
+            // manufacturer/protection bytes that would read back as payload.
+            let length = args
+                .length
+                .unwrap_or(sle::WRITE_SPAN.min(SLE5528_SIZE - args.offset));
             sle::read(c, args.offset, length)?
         }
         CardKind::Acos3 => {
@@ -35,13 +39,19 @@ pub fn run(c: &Connected, args: &ReadArgs, dict: &Dict) -> Result<(), Box<dyn Er
     println!();
     if args.raw {
         hexdump(&data);
-    } else if let Some(uri) = crate::aturi::is_encoded(&data)
-        .then(|| crate::aturi::decode(&data, dict))
-        .flatten()
-    {
-        println!("{uri}");
     } else {
-        println!("{}", decode_text(&data));
+        // The payload decoder skips erased fill at both ends (the data may sit
+        // past an offset another tool chose), decodes a compact at:// or
+        // favorites blob, and returns any trailing newline-separated text —
+        // the layout rocksky-desktop writes.
+        let payloads = crate::aturi::decode_payloads(&data, dict);
+        if payloads.is_empty() {
+            println!("(no data)");
+        } else {
+            for p in payloads {
+                println!("{p}");
+            }
+        }
     }
     Ok(())
 }

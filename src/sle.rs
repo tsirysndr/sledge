@@ -3,6 +3,14 @@
 use crate::card::{Connected, SLE5528_SIZE, expect_ok};
 use std::error::Error;
 
+/// How much of an SLE card a write owns, matching rocksky-desktop's
+/// SLE_WRITE_SPAN. Writes without an explicit --length pad the payload to this
+/// with the erased value, so nothing left by a longer previous write survives
+/// past the end of the new one — stale bytes would otherwise read back as an
+/// extra record. Reads default to this window too: the card's tail holds
+/// manufacturer/protection bytes that are not payload.
+pub const WRITE_SPAN: usize = 256;
+
 /// Tell the reader the inserted card is an SLE4418/4428/5518/5528 (type 0x05).
 pub fn select_type(c: &Connected) -> Result<(), Box<dyn Error>> {
     let r = c.transmit(&[0xFF, 0xA4, 0x00, 0x00, 0x01, 0x05])?;

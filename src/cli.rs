@@ -39,11 +39,14 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    /// Start address / offset in bytes (SLE cards).
-    #[arg(long, default_value_t = 0)]
+    /// Start address / offset in bytes (SLE cards). Defaults past the
+    /// protected header, matching where `write` puts data; pass --offset 0
+    /// to read the header too.
+    #[arg(long, default_value_t = 32)]
     pub offset: usize,
 
-    /// Number of bytes to read (default: to end of memory / file).
+    /// Number of bytes to read (SLE default: a 256-byte window from the
+    /// offset; ACOS default: to end of file).
     #[arg(long)]
     pub length: Option<usize>,
 

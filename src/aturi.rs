@@ -9,6 +9,12 @@
 //!
 //! On-card layout — the first byte is a marker plain UTF-8 text can't start with:
 //!   0xA5 <flags> <authority> [collection] [rkey]
+//!
+//! Decoding stops as soon as it has consumed those fields and reports how far it
+//! got, so a caller may store more of its own data straight after the blob.
+//! rocksky-desktop uses that to append a newline and a library-id fallback; the
+//! payload helpers at the bottom of this module speak that same layout, so a
+//! card written by either tool reads in the other.
 
 const MARK: u8 = 0xA5;
 const PLC_LEN: usize = 15;
@@ -109,15 +115,17 @@ pub fn encode(uri: &str, dict: &Dict) -> Result<Vec<u8>, String> {
     out.extend_from_slice(&body);
 
     // Safety net: the value we store must reconstruct the exact input.
-    if decode(&out, dict).as_deref() != Some(uri) {
+    if decode(&out, dict).map(|(u, _)| u).as_deref() != Some(uri) {
         return Err("internal error: URI did not round-trip".to_string());
     }
     Ok(out)
 }
 
-/// Decode a compact AT-URI back to its string form, or `None` if `data` isn't
-/// one of ours.
-pub fn decode(data: &[u8], dict: &Dict) -> Option<String> {
+/// Decode a compact AT-URI, returning it and how many bytes it occupied, or
+/// `None` if `data` isn't one of ours.
+///
+/// The length matters: anything after the blob is the caller's, not ours.
+pub fn decode(data: &[u8], dict: &Dict) -> Option<(String, usize)> {
     if data.first() != Some(&MARK) {
         return None;
     }
@@ -167,8 +175,133 @@ pub fn decode(data: &[u8], dict: &Dict) -> Option<String> {
         uri.push_str(&rkey);
     }
 
-    let _ = p;
-    Some(uri)
+    Some((uri, p))
+}
+
+/// Marker for a compact favorites reference, written by rocksky-desktop.
+/// Distinct from [`MARK`], and like it a byte plain UTF-8 text cannot start
+/// with. Favorites are a query owned by a person, not a record, so there is no
+/// AT-URI to pack — the card names the person instead.
+const FAV_MARK: u8 = 0xA6;
+const FAV_PLC: u8 = 0b0000_0001;
+
+pub const FAVORITES_PREFIX: &str = "rocksky://favorites/";
+
+pub fn is_favorites(data: &[u8]) -> bool {
+    data.first() == Some(&FAV_MARK)
+}
+
+/// Encode `rocksky://favorites/<did>` compactly. `did` is the raw identifier.
+pub fn encode_favorites(did: &str) -> Result<Vec<u8>, String> {
+    let mut flags = 0u8;
+    let mut body = Vec::new();
+    if let Some(raw) = plc_bytes(did) {
+        flags |= FAV_PLC;
+        body.extend_from_slice(&raw);
+    } else {
+        push_lit(&mut body, did.as_bytes()).ok_or_else(|| "the DID is too long".to_string())?;
+    }
+
+    let mut out = vec![FAV_MARK, flags];
+    out.extend_from_slice(&body);
+    match decode_favorites(&out) {
+        Some((back, _)) if back == format!("{FAVORITES_PREFIX}{did}") => Ok(out),
+        _ => Err("internal error: favorites did not round-trip".to_string()),
+    }
+}
+
+/// Decode a compact favorites reference and how many bytes it occupied.
+pub fn decode_favorites(data: &[u8]) -> Option<(String, usize)> {
+    if data.first() != Some(&FAV_MARK) {
+        return None;
+    }
+    let flags = *data.get(1)?;
+    let mut p = 2usize;
+    let did = if flags & FAV_PLC != 0 {
+        let raw = data.get(p..p + PLC_LEN)?;
+        p += PLC_LEN;
+        format!("did:plc:{}", b32_encode(raw))
+    } else {
+        let (b, np) = read_lit(data, p)?;
+        p = np;
+        String::from_utf8_lossy(b).into_owned()
+    };
+    Some((format!("{FAVORITES_PREFIX}{did}"), p))
+}
+
+/// Build what goes on the card: the first payload compactly encoded when it is
+/// an `at://` URI or a favorites reference, then the remaining payloads as
+/// newline-separated text. This is the layout rocksky-desktop writes.
+pub fn encode_payloads(payloads: &[&str], dict: &Dict) -> Result<Vec<u8>, String> {
+    let Some((first, rest)) = payloads.split_first() else {
+        return Err("nothing to write".into());
+    };
+
+    let mut out = if looks_like_aturi(first) {
+        encode(first, dict)?
+    } else if let Some(did) = first.strip_prefix(FAVORITES_PREFIX) {
+        encode_favorites(did)?
+    } else {
+        first.as_bytes().to_vec()
+    };
+    for extra in rest {
+        out.push(b'\n');
+        out.extend_from_slice(extra.as_bytes());
+    }
+    Ok(out)
+}
+
+/// Recover the payload list written by [`encode_payloads`] (by this tool or by
+/// rocksky-desktop).
+///
+/// Erased memory reads back as 0xFF (SLE) or 0x00 (ACOS), and a card is rarely
+/// written from byte zero — the SLE default offset skips a protected header —
+/// so the fill has to be skipped at *both* ends, not just the tail.
+///
+/// The compact blob is located before any tail trimming, because it knows its
+/// own length and its last byte may legitimately be 0x00: a packed TID ending
+/// in a zero would otherwise be trimmed away and the whole URI lost.
+pub fn decode_payloads(data: &[u8], dict: &Dict) -> Vec<String> {
+    let fill = |b: u8| b == 0xFF || b == 0x00;
+    let start = data.iter().position(|&b| !fill(b)).unwrap_or(data.len());
+    let data = &data[start..];
+    if data.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let rest = if is_favorites(data) {
+        match decode_favorites(data) {
+            Some((uri, used)) => {
+                out.push(uri);
+                &data[used..]
+            }
+            None => return Vec::new(),
+        }
+    } else {
+        match decode(data, dict) {
+            Some((uri, used)) => {
+                out.push(uri);
+                &data[used..]
+            }
+            // Ours, but not reconstructable — better nothing than guesswork.
+            None if is_encoded(data) => return Vec::new(),
+            None => data,
+        }
+    };
+
+    // Only now is trimming the tail safe: whatever the blob claimed is already
+    // consumed, so nothing here belongs to it.
+    let end = rest.iter().rposition(|&b| !fill(b)).map_or(0, |i| i + 1);
+    let rest = &rest[..end];
+
+    for line in String::from_utf8_lossy(rest).split('\n') {
+        let line = line.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+        if !line.is_empty() {
+            out.push(line.to_string());
+        }
+    }
+    out
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -290,7 +423,11 @@ mod tests {
     fn roundtrip_with(uri: &str, d: &Dict) -> usize {
         let enc = encode(uri, d).expect("encode");
         assert!(is_encoded(&enc));
-        assert_eq!(decode(&enc, d).as_deref(), Some(uri), "roundtrip {uri}");
+        assert_eq!(
+            decode(&enc, d).map(|(u, _)| u).as_deref(),
+            Some(uri),
+            "roundtrip {uri}"
+        );
         enc.len()
     }
 
@@ -356,5 +493,110 @@ mod tests {
     fn not_an_aturi() {
         assert!(!looks_like_aturi("hello world"));
         assert!(encode("hello world", &dict()).is_err());
+    }
+
+    const ALBUM: &str = "at://did:plc:7vdlgi2bflelz7mmuxoqjfcr/app.rocksky.album/3lhlttyitus2k";
+    const ID: &str = "rocksky://library/album/rec_cuhigpho74fi003acf9g";
+
+    /// Pinned against the bytes rocksky-desktop's encoder produces. This is the
+    /// contract that lets a card written by either tool read in the other; the
+    /// collection index is one byte in the middle of an otherwise opaque blob,
+    /// so a drift would not fail loudly.
+    #[test]
+    fn matches_rocksky_desktop_byte_for_byte() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02X}")).collect::<String>();
+        assert_eq!(
+            hex(&encode(ALBUM, &dict()).unwrap()),
+            "A51FFD46B323412AC8BCFD8CA5DD0494510118B639CF9D9D6010"
+        );
+        assert_eq!(
+            hex(&encode(
+                "at://did:plc:7vdlgi2bflelz7mmuxoqjfcr/app.rocksky.playlist/3mttndjwxh223",
+                &dict()
+            )
+            .unwrap()),
+            "A51FFD46B323412AC8BCFD8CA5DD049451001967334BF9D68001"
+        );
+        assert_eq!(
+            hex(&encode_favorites("did:plc:7vdlgi2bflelz7mmuxoqjfcr").unwrap()),
+            "A601FD46B323412AC8BCFD8CA5DD049451"
+        );
+    }
+
+    #[test]
+    fn roundtrips_a_uri_with_its_fallback() {
+        let bytes = encode_payloads(&[ALBUM, ID], &dict()).unwrap();
+        assert_eq!(
+            decode_payloads(&bytes, &dict()),
+            vec![ALBUM.to_string(), ID.to_string()]
+        );
+    }
+
+    /// A card written by rocksky-desktop reads back exactly this: erased fill
+    /// before the data (it writes at its own offset), the compact blob, a
+    /// newline, the library-id fallback as text, then erased fill to the end.
+    #[test]
+    fn reads_a_rocksky_desktop_card() {
+        for fill in [0xFFu8, 0x00] {
+            let mut bytes = vec![fill; 32];
+            bytes.extend_from_slice(&encode_payloads(&[ALBUM, ID], &dict()).unwrap());
+            bytes.resize(512, fill);
+            assert_eq!(
+                decode_payloads(&bytes, &dict()),
+                vec![ALBUM.to_string(), ID.to_string()],
+                "fill {fill:02X}"
+            );
+        }
+        assert!(decode_payloads(&[0xFF; 64], &dict()).is_empty(), "blank");
+        assert!(decode_payloads(&[0x00; 64], &dict()).is_empty(), "blank");
+    }
+
+    /// The blob's own bytes may end in 0x00 — a packed TID can. Trimming the
+    /// tail before decoding would eat it and lose the whole URI, so the blob is
+    /// located first and only what follows it is trimmed.
+    #[test]
+    fn does_not_trim_a_blob_ending_in_zero() {
+        // This rkey packs to …9D6000 — a TID whose last byte really is zero.
+        let uri = "at://did:plc:7vdlgi2bflelz7mmuxoqjfcr/app.rocksky.album/3lhlttyitus22";
+        let blob = encode_payloads(&[uri], &dict()).unwrap();
+        assert_eq!(blob.last(), Some(&0x00), "this vector must end in 0x00");
+
+        let mut padded = blob.clone();
+        padded.resize(64, 0x00);
+        assert_eq!(decode_payloads(&padded, &dict()), vec![uri.to_string()]);
+    }
+
+    /// A favorites card round-trips through the payload helpers.
+    #[test]
+    fn roundtrips_a_favorites_card() {
+        let plain = "rocksky://favorites/did:plc:7vdlgi2bflelz7mmuxoqjfcr";
+        let bytes = encode_payloads(&[plain], &dict()).unwrap();
+        assert_eq!(bytes.len(), 17, "marker + flags + 15 packed plc bytes");
+        assert_eq!(decode_payloads(&bytes, &dict()), vec![plain.to_string()]);
+    }
+
+    /// The two markers must not be confused for one another.
+    #[test]
+    fn favorites_and_record_uris_stay_distinct() {
+        let fav = encode_favorites("did:plc:7vdlgi2bflelz7mmuxoqjfcr").unwrap();
+        let uri = encode(ALBUM, &dict()).unwrap();
+        assert!(is_favorites(&fav) && !is_encoded(&fav));
+        assert!(is_encoded(&uri) && !is_favorites(&uri));
+        assert!(
+            decode(&fav, &dict()).is_none(),
+            "a favorites blob is not an AT-URI"
+        );
+        assert!(decode_favorites(&uri).is_none(), "and vice versa");
+    }
+
+    /// A card holding plain text still reads, it just isn't compact.
+    #[test]
+    fn reads_a_plain_text_card() {
+        let mut bytes = format!("{ALBUM}\n{ID}").into_bytes();
+        bytes.resize(256, 0xFF);
+        assert_eq!(
+            decode_payloads(&bytes, &dict()),
+            vec![ALBUM.to_string(), ID.to_string()]
+        );
     }
 }
